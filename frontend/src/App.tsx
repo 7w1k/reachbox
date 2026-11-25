@@ -49,6 +49,7 @@ function App() {
   const [emails, setEmails] = useState<Email[]>([]);
   const [search, setSearch] = useState("");
   const [searchResults, setSearchResults] = useState<Email[] | null>(null);
+  const [selectedEmail, setSelectedEmail] = useState<Email | null>(null);
 
   const [slackConnected, setSlackConnected] = useState(false);
   const [message, setMessage] = useState("");
@@ -95,6 +96,7 @@ function App() {
         if (current && senderList.some((s: Sender) => s.id === current)) {
           return current;
         }
+
         return senderList[0]?.id || "";
       });
     }
@@ -138,6 +140,11 @@ function App() {
     }
   }, [page, user]);
 
+  function navigate(nextPage: Page) {
+    setSelectedEmail(null);
+    setPage(nextPage);
+  }
+
   function login() {
     window.location.href = "http://localhost:5000/api/auth/google";
   }
@@ -149,6 +156,8 @@ function App() {
       setUser(null);
       setSenders([]);
       setSenderId("");
+      setSelectedEmail(null);
+      setSearchResults(null);
       setPage("dashboard");
     }
   }
@@ -303,7 +312,7 @@ function App() {
         <button
           className={page === "dashboard" ? "nav-item active" : "nav-item"}
           onClick={() => {
-            setPage("dashboard");
+            navigate("dashboard");
             setSearchResults(null);
             refreshDashboard();
           }}
@@ -313,21 +322,21 @@ function App() {
 
         <button
           className={page === "compose" ? "nav-item active" : "nav-item"}
-          onClick={() => setPage("compose")}
+          onClick={() => navigate("compose")}
         >
           ✉ Compose Email
         </button>
 
         <button
           className={page === "scheduled" ? "nav-item active" : "nav-item"}
-          onClick={() => setPage("scheduled")}
+          onClick={() => navigate("scheduled")}
         >
           ◷ Scheduled Emails
         </button>
 
         <button
           className={page === "sent" ? "nav-item active" : "nav-item"}
-          onClick={() => setPage("sent")}
+          onClick={() => navigate("sent")}
         >
           ✓ Sent Emails
         </button>
@@ -373,12 +382,22 @@ function App() {
         <header className="topbar">
           <div>
             <h2>
-              {page === "dashboard" && "Dashboard"}
-              {page === "compose" && "Compose Email"}
-              {page === "scheduled" && "Scheduled Emails"}
-              {page === "sent" && "Sent Emails"}
+              {selectedEmail
+                ? "Email Details"
+                : page === "dashboard"
+                ? "Dashboard"
+                : page === "compose"
+                ? "Compose Email"
+                : page === "scheduled"
+                ? "Scheduled Emails"
+                : "Sent Emails"}
             </h2>
-            <p>Welcome back, {user.name.split(" ")[0]}</p>
+
+            <p>
+              {selectedEmail
+                ? selectedEmail.subject
+                : `Welcome back, ${user.name.split(" ")[0]}`}
+            </p>
           </div>
 
           <div className="top-actions">
@@ -393,7 +412,7 @@ function App() {
           </div>
         )}
 
-        {page === "dashboard" && (
+        {!selectedEmail && page === "dashboard" && (
           <section>
             <div className="welcome-card">
               <div>
@@ -405,7 +424,7 @@ function App() {
 
                 <button
                   className="primary-button"
-                  onClick={() => setPage("compose")}
+                  onClick={() => navigate("compose")}
                 >
                   + Compose Email
                 </button>
@@ -418,7 +437,7 @@ function App() {
               <div className="stat-card">
                 <span>Total scheduled</span>
                 <strong>{scheduledCount}</strong>
-                <button onClick={() => setPage("scheduled")}>
+                <button onClick={() => navigate("scheduled")}>
                   View scheduled emails
                 </button>
               </div>
@@ -426,7 +445,7 @@ function App() {
               <div className="stat-card">
                 <span>Emails sent</span>
                 <strong>{sentCount}</strong>
-                <button onClick={() => setPage("sent")}>
+                <button onClick={() => navigate("sent")}>
                   View sent emails
                 </button>
               </div>
@@ -466,12 +485,17 @@ function App() {
                 </button>
               </form>
 
-              {searchResults && <EmailTable emails={searchResults} />}
+              {searchResults && (
+                <EmailTable
+                  emails={searchResults}
+                  onSelect={setSelectedEmail}
+                />
+              )}
             </div>
           </section>
         )}
 
-        {page === "compose" && (
+        {!selectedEmail && page === "compose" && (
           <section className="panel compose-panel">
             <h3>Create an email campaign</h3>
             <p className="muted">
@@ -508,9 +532,7 @@ function App() {
                 rows={5}
                 value={recipients}
                 onChange={(e) => setRecipients(e.target.value)}
-                placeholder={
-                  "recipient1@example.com\nrecipient2@example.com"
-                }
+                placeholder={"recipient1@example.com\nrecipient2@example.com"}
                 required
               />
 
@@ -593,33 +615,52 @@ function App() {
           </section>
         )}
 
-        {(page === "scheduled" || page === "sent") && (
-          <section className="panel">
-            <div className="table-heading">
-              <div>
-                <h3>
-                  {page === "scheduled" ? "Scheduled Emails" : "Sent Emails"}
-                </h3>
-                <p className="muted">{emails.length} email record(s)</p>
+        {!selectedEmail &&
+          (page === "scheduled" || page === "sent") && (
+            <section className="panel">
+              <div className="table-heading">
+                <div>
+                  <h3>
+                    {page === "scheduled" ? "Scheduled Emails" : "Sent Emails"}
+                  </h3>
+                  <p className="muted">
+                    {emails.length} email record(s)
+                  </p>
+                </div>
+
+                <button
+                  className="secondary-button"
+                  onClick={() => loadEmails(page)}
+                >
+                  ↻ Refresh
+                </button>
               </div>
 
-              <button
-                className="secondary-button"
-                onClick={() => loadEmails(page)}
-              >
-                ↻ Refresh
-              </button>
-            </div>
+              <EmailTable
+                emails={emails}
+                onSelect={setSelectedEmail}
+              />
+            </section>
+          )}
 
-            <EmailTable emails={emails} />
-          </section>
+        {selectedEmail && (
+          <EmailDetail
+            email={selectedEmail}
+            onBack={() => setSelectedEmail(null)}
+          />
         )}
       </main>
     </div>
   );
 }
 
-function EmailTable({ emails }: { emails: Email[] }) {
+function EmailTable({
+  emails,
+  onSelect,
+}: {
+  emails: Email[];
+  onSelect: (email: Email) => void;
+}) {
   if (!emails.length) {
     return <div className="empty-state">No emails found.</div>;
   }
@@ -638,7 +679,12 @@ function EmailTable({ emails }: { emails: Email[] }) {
 
         <tbody>
           {emails.map((email) => (
-            <tr key={email.id}>
+            <tr
+              key={email.id}
+              className="clickable-email-row"
+              onClick={() => onSelect(email)}
+              title="Open email"
+            >
               <td>{email.recipient}</td>
               <td>{email.subject}</td>
               <td>
@@ -657,6 +703,57 @@ function EmailTable({ emails }: { emails: Email[] }) {
         </tbody>
       </table>
     </div>
+  );
+}
+
+function EmailDetail({
+  email,
+  onBack,
+}: {
+  email: Email;
+  onBack: () => void;
+}) {
+  const date = email.sentAt || email.scheduledAt;
+
+  return (
+    <section className="email-detail">
+      <div className="email-detail-toolbar">
+        <button className="back-button" onClick={onBack}>
+          ← Back to emails
+        </button>
+
+        <span className={`status ${email.status.toLowerCase()}`}>
+          {email.status}
+        </span>
+      </div>
+
+      <div className="email-detail-content">
+        <h2 className="email-detail-subject">{email.subject}</h2>
+
+        <div className="email-sender-row">
+          <div className="email-avatar">
+            {(email.sender?.email || "R").charAt(0).toUpperCase()}
+          </div>
+
+          <div className="email-sender-info">
+            <strong>{email.sender?.email || "ReachInbox Sender"}</strong>
+            <span>to {email.recipient}</span>
+          </div>
+
+          <time>
+            {new Date(date).toLocaleString("en-IN", {
+              dateStyle: "medium",
+              timeStyle: "short",
+              timeZone: "Asia/Kolkata",
+            })}
+          </time>
+        </div>
+
+        <div className="email-body">
+          {email.body || "No email body available."}
+        </div>
+      </div>
+    </section>
   );
 }
 
