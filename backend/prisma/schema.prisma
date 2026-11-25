@@ -1,0 +1,90 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum EmailStatus {
+  SCHEDULED
+  PROCESSING
+  SENT
+  FAILED
+  CANCELLED
+}
+
+model User {
+  id        String   @id @default(uuid())
+  googleId  String?  @unique
+  name      String
+  email     String   @unique
+  avatar    String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  slackConnection SlackConnection?
+
+  senders Sender[]
+  emails  Email[]
+}
+
+model Sender {
+  id           String   @id @default(uuid())
+  email        String
+  name         String?
+  smtpHost     String?
+  smtpPort     Int?
+  smtpUser     String?
+  smtpPassword String?
+  hourlyLimit  Int      @default(100)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  emails Email[]
+
+  @@unique([userId, email])
+}
+
+model Email {
+  id             String      @id @default(uuid())
+  recipient      String
+  subject        String
+  body           String
+  status         EmailStatus @default(SCHEDULED)
+  scheduledAt    DateTime
+  sentAt         DateTime?
+  attempts       Int         @default(0)
+  lastError      String?
+  idempotencyKey String      @unique
+  createdAt      DateTime    @default(now())
+  updatedAt      DateTime    @updatedAt
+
+  userId   String
+  senderId String
+
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  sender Sender @relation(fields: [senderId], references: [id], onDelete: Cascade)
+
+  @@index([userId, status])
+  @@index([senderId, scheduledAt])
+  @@index([status, scheduledAt])
+}
+
+
+model SlackConnection {
+  id          String   @id @default(uuid())
+  teamId      String
+  teamName    String?
+  botToken    String
+  botUserId   String?
+  channelId   String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  userId String @unique
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
