@@ -1,5 +1,5 @@
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, type FormEvent } from "react";
 import Papa from "papaparse";
 import api from "./services/api";
 import "./index.css";
@@ -22,19 +22,43 @@ interface Email {
   sender?: { email: string };
 }
 
+interface Sender {
+  id: string;
+  email: string;
+  name: string | null;
+  hourlyLimit: number;
+}
+
 type Page = "dashboard" | "compose" | "scheduled" | "sent";
+
+function extractEmails(response: any): Email[] {
+  const data = response.data?.data;
+
+  if (Array.isArray(data)) return data;
+  if (Array.isArray(data?.emails)) return data.emails;
+  if (Array.isArray(response.data?.emails)) return response.data.emails;
+
+  return [];
+}
 
 function App() {
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
   const [page, setPage] = useState<Page>("dashboard");
+
   const [emails, setEmails] = useState<Email[]>([]);
   const [search, setSearch] = useState("");
   const [searchResults, setSearchResults] = useState<Email[] | null>(null);
+
   const [slackConnected, setSlackConnected] = useState(false);
   const [message, setMessage] = useState("");
 
+  const [senders, setSenders] = useState<Sender[]>([]);
   const [senderId, setSenderId] = useState("");
+
+  const [scheduledCount, setScheduledCount] = useState(0);
+  const [sentCount, setSentCount] = useState(0);
+
   const [recipients, setRecipients] = useState("");
   const [subject, setSubject] = useState("");
   const [body, setBody] = useState("");
@@ -46,10 +70,42 @@ function App() {
     checkLogin();
   }, []);
 
+  async function refreshDashboard() {
+    const results = await Promise.allSettled([
+      api.get("/emails/scheduled"),
+      api.get("/emails/sent"),
+      api.get("/senders"),
+    ]);
+
+    if (results[0].status === "fulfilled") {
+      setScheduledCount(extractEmails(results[0].value).length);
+    }
+
+    if (results[1].status === "fulfilled") {
+      setSentCount(extractEmails(results[1].value).length);
+    }
+
+    if (results[2].status === "fulfilled") {
+      const data = results[2].value.data?.data;
+      const senderList = Array.isArray(data) ? data : [];
+
+      setSenders(senderList);
+
+      setSenderId((current) => {
+        if (current && senderList.some((s: Sender) => s.id === current)) {
+          return current;
+        }
+        return senderList[0]?.id || "";
+      });
+    }
+  }
+
   async function checkLogin() {
     try {
       const response = await api.get("/auth/me");
       setUser(response.data.user);
+
+      await refreshDashboard();
 
       try {
         const slack = await api.get("/slack/status");
@@ -67,10 +123,11 @@ function App() {
   async function loadEmails(type: "scheduled" | "sent") {
     try {
       const response = await api.get(`/emails/${type}`);
-      const data = response.data.data;
-      setEmails(Array.isArray(data) ? data : data?.emails || []);
+      setEmails(extractEmails(response));
     } catch (error: any) {
-      setMessage(error.response?.data?.message || "Unable to load emails");
+      setMessage(
+        error.response?.data?.message || "Unable to load emails"
+      );
       setEmails([]);
     }
   }
@@ -90,30 +147,35 @@ function App() {
       await api.post("/auth/logout");
     } finally {
       setUser(null);
+      setSenders([]);
+      setSenderId("");
       setPage("dashboard");
     }
   }
 
   async function uploadRecipients(file: File) {
     const text = await file.text();
-    const parsed = Papa.parse<string[]>(text, {
+
+    const parsed = Papa.parse(text, {
       skipEmptyLines: true,
     });
 
     const allText = parsed.data.flat().join(" ");
+
     const found = allText.match(
       /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g
     );
 
     if (found?.length) {
-      setRecipients([...new Set(found)].join("\n"));
-      setMessage(`${new Set(found).size} unique recipients loaded`);
+      const uniqueRecipients = [...new Set(found)];
+      setRecipients(uniqueRecipients.join("\n"));
+      setMessage(`${uniqueRecipients.length} unique recipients loaded`);
     } else {
       setMessage("No valid email addresses found in the file");
     }
   }
 
-  async function scheduleEmail(e: React.FormEvent) {
+  async function scheduleEmail(e: FormEvent) {
     e.preventDefault();
 
     const recipientList = [
@@ -125,8 +187,8 @@ function App() {
       ),
     ];
 
-    if (!senderId.trim()) {
-      setMessage("Enter your sender ID");
+    if (!senderId) {
+      setMessage("Please select a sender");
       return;
     }
 
@@ -135,8 +197,18 @@ function App() {
       return;
     }
 
+    if (!subject.trim() || !body.trim()) {
+      setMessage("Subject and email body are required");
+      return;
+    }
+
     if (!startTime) {
       setMessage("Select a start time");
+      return;
+    }
+
+    if (delaySeconds < 0) {
+      setMessage("Delay cannot be negative");
       return;
     }
 
@@ -145,7 +217,7 @@ function App() {
 
     try {
       const response = await api.post("/emails/schedule", {
-        senderId: senderId.trim(),
+        senderId,
         recipients: recipientList,
         subject,
         body,
@@ -155,12 +227,14 @@ function App() {
 
       setMessage(
         response.data.message ||
-        `Successfully scheduled ${recipientList.length} email(s)`
+          `Successfully scheduled ${recipientList.length} email(s)`
       );
 
       setRecipients("");
       setSubject("");
       setBody("");
+
+      await refreshDashboard();
     } catch (error: any) {
       setMessage(
         error.response?.data?.message || "Failed to schedule emails"
@@ -170,7 +244,7 @@ function App() {
     }
   }
 
-  async function searchEmails(e: React.FormEvent) {
+  async function searchEmails(e: FormEvent) {
     e.preventDefault();
 
     if (!search.trim()) {
@@ -183,13 +257,14 @@ function App() {
         params: { q: search },
       });
 
-      setSearchResults(response.data.data || []);
+      const data = response.data?.data;
+      setSearchResults(Array.isArray(data) ? data : []);
     } catch (error: any) {
       setMessage(error.response?.data?.message || "Search failed");
     }
   }
 
-  async function connectSlack() {
+  function connectSlack() {
     window.location.href = "http://localhost:5000/api/slack/connect";
   }
 
@@ -204,9 +279,11 @@ function App() {
           <div className="logo">R</div>
           <h1>ReachInbox</h1>
           <p>Smart email scheduling and automation.</p>
+
           <button className="google-button" onClick={login}>
             <span>G</span> Continue with Google
           </button>
+
           <small>Securely manage and schedule your emails.</small>
         </div>
       </div>
@@ -228,6 +305,7 @@ function App() {
           onClick={() => {
             setPage("dashboard");
             setSearchResults(null);
+            refreshDashboard();
           }}
         >
           ◫ Dashboard
@@ -256,9 +334,11 @@ function App() {
 
         <div className="sidebar-bottom">
           <div className="nav-label">INTEGRATIONS</div>
+
           <button className="nav-item" onClick={connectSlack}>
             # Slack {slackConnected ? "✓" : "+"}
           </button>
+
           <a
             className="nav-item"
             href="http://localhost:5000/admin/queues"
@@ -276,10 +356,12 @@ function App() {
                 {user.name.charAt(0)}
               </div>
             )}
+
             <div className="profile-info">
               <strong>{user.name}</strong>
               <small>{user.email}</small>
             </div>
+
             <button className="logout" onClick={logout} title="Logout">
               ↪
             </button>
@@ -298,6 +380,7 @@ function App() {
             </h2>
             <p>Welcome back, {user.name.split(" ")[0]}</p>
           </div>
+
           <div className="top-actions">
             <span className="online-dot" /> System Online
           </div>
@@ -319,6 +402,7 @@ function App() {
                   Schedule, track and manage your email campaigns from one
                   place.
                 </p>
+
                 <button
                   className="primary-button"
                   onClick={() => setPage("compose")}
@@ -326,27 +410,32 @@ function App() {
                   + Compose Email
                 </button>
               </div>
+
               <div className="welcome-icon">✉</div>
             </div>
 
             <div className="stats-grid">
               <div className="stat-card">
                 <span>Total scheduled</span>
-                <strong>Manage →</strong>
+                <strong>{scheduledCount}</strong>
                 <button onClick={() => setPage("scheduled")}>
                   View scheduled emails
                 </button>
               </div>
+
               <div className="stat-card">
                 <span>Emails sent</span>
-                <strong>Track →</strong>
+                <strong>{sentCount}</strong>
                 <button onClick={() => setPage("sent")}>
                   View sent emails
                 </button>
               </div>
+
               <div className="stat-card">
                 <span>Slack integration</span>
-                <strong>{slackConnected ? "Connected" : "Not connected"}</strong>
+                <strong>
+                  {slackConnected ? "Connected" : "Not connected"}
+                </strong>
                 <button onClick={connectSlack}>
                   {slackConnected ? "Reconnect Slack" : "Connect Slack"}
                 </button>
@@ -355,13 +444,16 @@ function App() {
 
             <div className="panel">
               <h3>Search your emails</h3>
+
               <form className="search-form" onSubmit={searchEmails}>
                 <input
                   value={search}
                   onChange={(e) => setSearch(e.target.value)}
                   placeholder="Search recipient, subject or email body..."
                 />
+
                 <button className="primary-button">Search</button>
+
                 <button
                   type="button"
                   className="secondary-button"
@@ -374,9 +466,7 @@ function App() {
                 </button>
               </form>
 
-              {searchResults && (
-                <EmailTable emails={searchResults} />
-              )}
+              {searchResults && <EmailTable emails={searchResults} />}
             </div>
           </section>
         )}
@@ -389,20 +479,38 @@ function App() {
             </p>
 
             <form onSubmit={scheduleEmail}>
-              <label>Sender ID</label>
-              <input
+              <label>Sender Email</label>
+
+              <select
                 value={senderId}
                 onChange={(e) => setSenderId(e.target.value)}
-                placeholder="Paste your sender UUID from Prisma Studio"
                 required
-              />
+              >
+                <option value="">Select a sender</option>
+
+                {senders.map((sender) => (
+                  <option key={sender.id} value={sender.id}>
+                    {sender.name || sender.email} ({sender.email})
+                  </option>
+                ))}
+              </select>
+
+              {senders.length === 0 && (
+                <p className="muted">
+                  No sender account found. Please add a sender to your account
+                  first.
+                </p>
+              )}
 
               <label>Recipients</label>
+
               <textarea
                 rows={5}
                 value={recipients}
                 onChange={(e) => setRecipients(e.target.value)}
-                placeholder="recipient1@example.com&#10;recipient2@example.com"
+                placeholder={
+                  "recipient1@example.com\nrecipient2@example.com"
+                }
                 required
               />
 
@@ -415,17 +523,26 @@ function App() {
                     onChange={(e) => {
                       const file = e.target.files?.[0];
                       if (file) uploadRecipients(file);
+                      e.currentTarget.value = "";
                     }}
                   />
                 </label>
+
                 <span>
                   {recipients
-                    ? `${recipients.split(/[\s,;]+/).filter(Boolean).length} entries`
+                    ? `${
+                        new Set(
+                          recipients
+                            .split(/[\s,;]+/)
+                            .filter(Boolean)
+                        ).size
+                      } unique recipients`
                     : "No recipients loaded"}
                 </span>
               </div>
 
               <label>Subject</label>
+
               <input
                 value={subject}
                 onChange={(e) => setSubject(e.target.value)}
@@ -434,6 +551,7 @@ function App() {
               />
 
               <label>Email body</label>
+
               <textarea
                 rows={7}
                 value={body}
@@ -452,6 +570,7 @@ function App() {
                     required
                   />
                 </div>
+
                 <div>
                   <label>Delay between emails (seconds)</label>
                   <input
@@ -464,7 +583,10 @@ function App() {
                 </div>
               </div>
 
-              <button className="primary-button submit-button" disabled={sending}>
+              <button
+                className="primary-button submit-button"
+                disabled={sending || senders.length === 0}
+              >
                 {sending ? "Scheduling..." : "Schedule Campaign"}
               </button>
             </form>
@@ -475,11 +597,12 @@ function App() {
           <section className="panel">
             <div className="table-heading">
               <div>
-                <h3>{page === "scheduled" ? "Scheduled Emails" : "Sent Emails"}</h3>
-                <p className="muted">
-                  {emails.length} email record(s)
-                </p>
+                <h3>
+                  {page === "scheduled" ? "Scheduled Emails" : "Sent Emails"}
+                </h3>
+                <p className="muted">{emails.length} email record(s)</p>
               </div>
+
               <button
                 className="secondary-button"
                 onClick={() => loadEmails(page)}
@@ -487,6 +610,7 @@ function App() {
                 ↻ Refresh
               </button>
             </div>
+
             <EmailTable emails={emails} />
           </section>
         )}
@@ -511,6 +635,7 @@ function EmailTable({ emails }: { emails: Email[] }) {
             <th>Date</th>
           </tr>
         </thead>
+
         <tbody>
           {emails.map((email) => (
             <tr key={email.id}>
