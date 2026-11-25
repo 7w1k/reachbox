@@ -15,21 +15,35 @@ export function authenticateToken(
 
   if (!token) {
     return res.status(401).json({
+      success: false,
       message: "Authentication required",
     });
   }
 
   try {
-    const decoded = jwt.verify(token, process.env.JWT_SECRET!) as jwt.JwtPayload;
+    const decoded = jwt.verify(
+      token,
+      process.env.JWT_SECRET!
+    ) as jwt.JwtPayload;
 
-    if (typeof decoded.sub !== "string") {
-      return res.status(401).json({ message: "Invalid token" });
+    console.log("Decoded JWT:", decoded);
+
+    const userId = decoded.sub;
+
+    if (typeof userId !== "string" || !userId) {
+      return res.status(401).json({
+        success: false,
+        message: "Invalid token: user ID missing",
+      });
     }
 
-    req.userId = decoded.sub;
+    req.userId = userId;
     next();
-  } catch {
+  } catch (error) {
+    console.error("JWT verification error:", error);
+
     return res.status(401).json({
+      success: false,
       message: "Invalid or expired token",
     });
   }

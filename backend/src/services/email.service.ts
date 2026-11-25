@@ -1,6 +1,7 @@
 
 import prisma from "../config/database";
 import { emailQueue } from "../queues/email.queue";
+import { indexEmail } from "./email-search.service";
 
 interface ScheduleEmailInput {
   userId: string;
@@ -65,6 +66,9 @@ export async function scheduleEmails(input: ScheduleEmailInput) {
         },
       });
     })
+  );
+  await Promise.allSettled(
+    createdEmails.map((email) => indexEmail(email.id))
   );
 
   // Add each email to the delayed queue.

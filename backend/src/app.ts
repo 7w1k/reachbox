@@ -9,6 +9,10 @@ import cookieParser from "cookie-parser";
 import session from "express-session";
 import passport from "./config/passport";
 import authRoutes from "./routes/auth.routes";
+import senderRoutes from "./routes/sender.routes";
+
+
+
 
 const app = express();
 
@@ -39,6 +43,7 @@ app.use(passport.initialize());
 app.use("/api/auth", authRoutes);
 app.use(express.json({ limit: "5mb" }));
 app.use("/api/search", searchRoutes);
+app.use("/api/senders", senderRoutes);
 app.use("/admin/queues", adminRoutes);
 app.use("/api/slack", slackRoutes);
 app.use("/api/emails", emailRoutes);

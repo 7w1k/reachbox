@@ -1,9 +1,6 @@
 
-import dotenv from "dotenv";
-import { sendRateLimitNotification } from "../services/slack-notification.service";
-dotenv.config();
+import "dotenv/config";
 
-import { indexEmail } from "../services/email-search.service";
 import { Worker, Job, DelayedError } from "bullmq";
 import redis from "../config/redis";
 import prisma from "../config/database";
@@ -11,12 +8,23 @@ import { EMAIL_QUEUE } from "../queues/email.queue";
 import { getTransporter } from "../integrations/mailer";
 import nodemailer from "nodemailer";
 import { checkRateLimit } from "../services/rate-limit.service";
+import { indexEmail } from "../services/email-search.service";
+import { sendRateLimitNotification } from "../services/slack-notification.service";
 
 interface EmailJobData {
   emailId: string;
 }
 
 const concurrency = Number(process.env.WORKER_CONCURRENCY) || 5;
+
+async function syncEmailToSearch(emailId: string) {
+  try {
+    await indexEmail(emailId);
+    console.log(`Email ${emailId} search index updated`);
+  } catch (error) {
+    console.error(`Elasticsearch indexing failed for ${emailId}:`, error);
+  }
+}
 
 const worker = new Worker<EmailJobData>(
   EMAIL_QUEUE,
@@ -25,22 +33,18 @@ const worker = new Worker<EmailJobData>(
 
     const email = await prisma.email.findUnique({
       where: { id: emailId },
-      include: {
-        sender: true,
-      },
+      include: { sender: true },
     });
 
     if (!email) {
       throw new Error(`Email ${emailId} not found`);
     }
-    
 
-    // Do not send an email that is already completed or cancelled.
     if (email.status === "SENT" || email.status === "CANCELLED") {
-        console.log(`Skipping ${emailId}: ${email.status}`);
-        return;
+      console.log(`Skipping ${emailId}: ${email.status}`);
+      return;
     }
-    // Check sender rate limits before claiming the email
+
     const rateLimit = await checkRateLimit({
       senderId: email.senderId,
       emailId: email.id,
@@ -52,9 +56,7 @@ const worker = new Worker<EmailJobData>(
         1000,
         rateLimit.retryAt.getTime() - Date.now()
       );
-      console.log(`Rescheduling email ${emailId}`);
 
-      // Send one Slack notification per sender per hour
       try {
         await sendRateLimitNotification({
           userId: email.userId,
@@ -68,26 +70,18 @@ const worker = new Worker<EmailJobData>(
       await job.moveToDelayed(Date.now() + delay, job.token);
       throw new DelayedError();
     }
-    try {
-        await indexEmail(emailId);
-        console.log(`Email ${emailId} indexed successfully`);
-    } catch (indexError) {
-        console.error("Elasticsearch indexing failed:", indexError);
-    }
 
-    // Claim the email so another worker cannot process it simultaneously.
+    // Claim the email before processing.
     const claim = await prisma.email.updateMany({
       where: {
         id: emailId,
         status: {
-            in: ["SCHEDULED", "FAILED"],
+          in: ["SCHEDULED", "FAILED"],
         },
       },
       data: {
         status: "PROCESSING",
-        attempts: {
-          increment: 1,
-        },
+        attempts: { increment: 1 },
       },
     });
 
@@ -95,6 +89,9 @@ const worker = new Worker<EmailJobData>(
       console.log(`Email ${emailId} is already being processed`);
       return;
     }
+
+    // Update Elasticsearch with PROCESSING status.
+    await syncEmailToSearch(emailId);
 
     try {
       const transporter = await getTransporter(email.sender);
@@ -118,6 +115,9 @@ const worker = new Worker<EmailJobData>(
         },
       });
 
+      // Update Elasticsearch with SENT status.
+      await syncEmailToSearch(emailId);
+
       console.log(`Email sent to ${email.recipient}`);
 
       const previewUrl = nodemailer.getTestMessageUrl(info);
@@ -136,6 +136,9 @@ const worker = new Worker<EmailJobData>(
           lastError: message,
         },
       });
+
+      // Update Elasticsearch with FAILED status.
+      await syncEmailToSearch(emailId);
 
       throw error;
     }
